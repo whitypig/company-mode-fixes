@@ -38,6 +38,31 @@ The values should use the same format as `completion-ignored-extensions'."
   :type '(const string)
   :package-version '(company . "0.9.1"))
 
+(defcustom company-files-directory-annotation "[d]"
+  ""
+  :type '(string)
+  :group 'company-files)
+
+(defcustom company-files-file-annotation "[f]"
+  ""
+  :type '(string)
+  :group 'company-files)
+
+(defcustom company-files-recursive-candidates t
+  ""
+  :type '(boolean)
+  :group 'company-files)
+
+(defcustom company-files-use-flat-filename-completion t
+  ""
+  :type '(boolean)
+  :group 'company-files)
+
+(defcustom company-files-trigger-post-completion t
+  ""
+  :type '(boolean)
+  :group 'company-files)
+
 (defun company-files--directory-files (dir prefix)
   ;; Don't use directory-files. It produces directories without trailing /.
   (condition-case err
@@ -63,14 +88,30 @@ The values should use the same format as `completion-ignored-extensions'."
                                   file-exclusions))
              collect c)))
 
+(defvar company-files--valid-filename-regexp "[^+#?<>/\"*\t\r\n|;:]+"
+  "")
+(defvar company-files--invalid-filename-characters-regexp "[$+#?<>/\"*\t\r\n|;:]"
+  "")
+
 (defvar company-files--regexps
   (let* ((root (if (eq system-type 'windows-nt)
                    "[a-zA-Z]:/"
                  "/"))
-         (begin (concat "\\(?:\\.\\{1,2\\}/\\|~/\\|" root "\\)")))
+         (regs (list "\\.\\{1,2\\}/"
+                     "~/"
+                     (format "%s/" company-files--valid-filename-regexp)
+                     root))
+         (begin (concat "\\(?:"
+                        (mapconcat #'identity regs "\\|")
+                        "\\)")))
     (list (concat "\"\\(" begin "[^\"\n]*\\)")
-          (concat "\'\\(" begin "[^\'\n]*\\)")
+          (concat "'\\(" begin "[^'\n]*\\)")
           (concat "\\(?:[ \t=]\\|^\\)\\(" begin "[^ \t\n]*\\)"))))
+
+(defun company-files--get-prefix ()
+  (or (company-files--grab-existing-name)
+      (and company-files-use-flat-filename-completion
+           (company-files--grab-flat-name))))
 
 (defun company-files--grab-existing-name ()
   ;; Grab the file name.
@@ -85,6 +126,19 @@ The values should use the same format as `completion-ignored-extensions'."
          (file-exists-p dir)
          file)))
 
+(defun company-files--grab-flat-name ()
+  ""
+  (let* ((end (point))
+         (beg (or (save-excursion
+                    ;; Todo: What to do when filename contains spaces and is
+                    ;; quoted with " or ' or \."
+                    (and (re-search-backward "[ \t\r\n:]")
+                         (1+ (point))))
+                  (line-beginning-position)))
+         (prefix (buffer-substring-no-properties beg end)))
+    (when (not (string-match-p company-files--invalid-characters-regexp prefix))
+      prefix)))
+
 (defun company-files--connected-p (file)
   (or (not (file-remote-p file))
       (file-remote-p file nil t)))
@@ -97,7 +151,14 @@ The values should use the same format as `completion-ignored-extensions'."
 
 (defvar company-files--completion-cache nil)
 
-(defun company-files--complete (prefix)
+(cl-defun company-files--collect-candidates (prefix &key (recursive t))
+  (cond
+   ((not (string-match-p company-files--invalid-characters-regexp prefix))
+    (company-files--directory-files "." prefix))
+   (t
+    (company-files--complete prefix :recursive recursive))))
+
+(cl-defun company-files--complete (prefix &key (recursive t))
   (let* ((dir (file-name-directory prefix))
          (file (file-name-nondirectory prefix))
          (key (list file
@@ -107,17 +168,21 @@ The values should use the same format as `completion-ignored-extensions'."
     (unless (company-file--keys-match-p key (car company-files--completion-cache))
       (let* ((candidates (mapcar (lambda (f) (concat dir f))
                                  (company-files--directory-files dir file)))
-             (directories (unless (file-remote-p dir)
-                            (cl-remove-if-not (lambda (f)
-                                                (and (company-files--trailing-slash-p f)
-                                                     (not (file-remote-p f))
-                                                     (company-files--connected-p f)))
-                                              candidates)))
-             (children (and directories
-                            (cl-mapcan (lambda (d)
-                                         (mapcar (lambda (c) (concat d c))
-                                                 (company-files--directory-files d "")))
-                                       directories))))
+             (directories (and recursive
+                               (unless (file-remote-p dir)
+                                 (cl-remove-if-not
+                                  (lambda (f)
+                                    (and (company-files--trailing-slash-p f)
+                                         (not (file-remote-p f))
+                                         (company-files--connected-p f)))
+                                  candidates))))
+             (children (and recursive
+                            directories
+                            (cl-mapcan
+                             (lambda (d)
+                               (mapcar (lambda (c) (concat d c))
+                                       (company-files--directory-files d "")))
+                             directories))))
         (setq company-files--completion-cache
               (cons key (append candidates children)))))
     (all-completions prefix
@@ -127,6 +192,26 @@ The values should use the same format as `completion-ignored-extensions'."
   (and (equal (cdr old) (cdr new))
        (string-prefix-p (car old) (car new))))
 
+(defun company-files--annotation (candidate)
+  (let ((fmt "  %s"))
+    (cond
+     ((file-directory-p candidate)
+      (format fmt company-files-directory-annotation))
+     (t
+      (format fmt company-files-file-annotation)))))
+
+(defun company-files--post-completion (candidate)
+  (cond
+   ((and company-files-trigger-post-completion
+         (company-files--trailing-slash-p candidate))
+    (company-begin-backend 'company-files
+                           (lambda (arg)
+                             ;; arg is a selected candidate.
+                             (and (company-files--trailing-slash-p arg)
+                                  (company-begin-backend 'company-files)))))
+   ((company-files--trailing-slash-p candidate)
+    (delete-char -1))))
+
 ;;;###autoload
 (defun company-files (command &optional arg &rest ignored)
   "`company-mode' completion backend existing file names.
@@ -135,13 +220,16 @@ File paths with spaces are only supported inside strings."
   (interactive (list 'interactive))
   (cl-case command
     (interactive (company-begin-backend 'company-files))
-    (prefix (company-files--grab-existing-name))
-    (candidates (company-files--complete arg))
+    (prefix (company-files--get-prefix))
+    (candidates
+     (company-files--collect-candidates
+      arg :recursive company-files-recursive-candidates))
     (location (cons (dired-noselect
-                     (file-name-directory (directory-file-name arg))) 1))
-    (post-completion (when (company-files--trailing-slash-p arg)
-                       (delete-char -1)))
+                     (file-name-directory (directory-file-name arg)))
+                    1))
+    (post-completion (company-files--post-completion arg))
     (sorted t)
+    (annotation (company-files--annotation arg))
     (no-cache t)))
 
 (provide 'company-files)
