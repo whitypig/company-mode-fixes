@@ -104,7 +104,7 @@ choose a candidate.  This is especially useful when
                                   file-exclusions))
              collect c)))
 
-(defconst company-files--invalid-characters "$+?<>/\"*\t\r\n|;:"
+(defconst company-files--invalid-characters "$?<>/\"*\t\r\n|;:"
   "")
 
 (defvar company-files--invalid-filename-characters-regexp
@@ -151,12 +151,17 @@ choose a candidate.  This is especially useful when
 (defun company-files--grab-flat-name ()
   ""
   (let* ((end (point))
-         (beg (or (save-excursion
-                    ;; Todo: What to do when filename contains spaces and is
-                    ;; quoted with " or ' or \."
-                    (and (re-search-backward "[ \t\r\n:]")
-                         (1+ (point))))
-                  (line-beginning-position)))
+         (beg (or
+               (save-excursion
+                 ;; Todo: What to do when filename contains spaces and is
+                 ;; quoted with " or ' or \."
+                 (and
+                  (re-search-backward
+                   (format "[ ]\\|%s"
+                           company-files--invalid-filename-characters-regexp)
+                   (line-beginning-position) t)
+                  (1+ (point))))
+               (line-beginning-position)))
          (prefix (buffer-substring-no-properties beg end)))
     (when (not (string-match-p company-files--invalid-filename-characters-regexp prefix))
       prefix)))
@@ -174,6 +179,7 @@ choose a candidate.  This is especially useful when
 (defvar company-files--completion-cache nil)
 
 (cl-defun company-files--collect-candidates (prefix &key (recursive t))
+  ;; (message "DEBUG: company-files--collect-candidates, prefix=%s" prefix)
   (cond
    ((not (string-match-p company-files--invalid-filename-characters-regexp prefix))
     (company-files--directory-files "." prefix))
