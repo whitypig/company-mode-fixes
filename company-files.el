@@ -48,18 +48,34 @@ The values should use the same format as `completion-ignored-extensions'."
   :type '(string)
   :group 'company-files)
 
-(defcustom company-files-recursive-candidates t
-  ""
+(defcustom company-files-recursive-candidates nil
+  "When nil, completion is performed using candidates that are
+obtained in a similar way as when you do
+\"find . -maxdepth 1 -name 'prefix*' \"."
   :type '(boolean)
   :group 'company-files)
 
 (defcustom company-files-use-flat-filename-completion t
-  ""
+  "When non-nil, completion is done for a prefix that do _not_ contain any slash.
+
+Consider the following directory tree:
+
+./
+|-- foo1
+|-- foo2
+`-- foo3
+
+When this variable is set to t and you type \"fo\", then \"foo1\",
+\"foo2\" and \"foo3\" are shown up as candidates.  Sometimes this can
+be annoying and in that case, set this variable to nil to inhibit this
+behavior."
   :type '(boolean)
   :group 'company-files)
 
 (defcustom company-files-trigger-post-completion t
-  ""
+  "When non-nil, triggers completion using `company-files' after you
+choose a candidate.  This is especially useful when
+`company-files-recursive-candidates' is nil."
   :type '(boolean)
   :group 'company-files)
 
@@ -88,9 +104,15 @@ The values should use the same format as `completion-ignored-extensions'."
                                   file-exclusions))
              collect c)))
 
-(defvar company-files--valid-filename-regexp "[^+#?<>/\"*\t\r\n|;:]+"
+(defconst company-files--invalid-characters "$+?<>/\"*\t\r\n|;:"
   "")
-(defvar company-files--invalid-filename-characters-regexp "[$+#?<>/\"*\t\r\n|;:]"
+
+(defvar company-files--invalid-filename-characters-regexp
+  (format "[%s]" company-files--invalid-characters)
+  "")
+
+(defvar company-files--valid-filename-regexp
+  (format "[^%s]+" company-files--invalid-characters)
   "")
 
 (defvar company-files--regexps
@@ -136,7 +158,7 @@ The values should use the same format as `completion-ignored-extensions'."
                          (1+ (point))))
                   (line-beginning-position)))
          (prefix (buffer-substring-no-properties beg end)))
-    (when (not (string-match-p company-files--invalid-characters-regexp prefix))
+    (when (not (string-match-p company-files--invalid-filename-characters-regexp prefix))
       prefix)))
 
 (defun company-files--connected-p (file)
@@ -153,7 +175,7 @@ The values should use the same format as `completion-ignored-extensions'."
 
 (cl-defun company-files--collect-candidates (prefix &key (recursive t))
   (cond
-   ((not (string-match-p company-files--invalid-characters-regexp prefix))
+   ((not (string-match-p company-files--invalid-filename-characters-regexp prefix))
     (company-files--directory-files "." prefix))
    (t
     (company-files--complete prefix :recursive recursive))))
@@ -204,11 +226,12 @@ The values should use the same format as `completion-ignored-extensions'."
   (cond
    ((and company-files-trigger-post-completion
          (company-files--trailing-slash-p candidate))
-    (company-begin-backend 'company-files
-                           (lambda (arg)
-                             ;; arg is a selected candidate.
-                             (and (company-files--trailing-slash-p arg)
-                                  (company-begin-backend 'company-files)))))
+    (ignore-errors
+      (company-begin-backend 'company-files
+                             (lambda (arg)
+                               ;; arg is a selected candidate.
+                               (and (company-files--trailing-slash-p arg)
+                                    (company-begin-backend 'company-files))))))
    ((company-files--trailing-slash-p candidate)
     (delete-char -1))))
 
