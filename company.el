@@ -1000,7 +1000,7 @@ matches IDLE-BEGIN-AFTER-RE, return it wrapped in a cons."
          (when (> (length arg) 0)
            (let ((backend (or (get-text-property 0 'company-backend arg)
                               (car backends))))
-             (apply backend command args))))))))
+             (and backend (apply backend command args)))))))))
 
 (defun company--multi-backend-adapter-candidates (backends prefix separate)
   (let ((pairs (cl-loop for backend in backends
