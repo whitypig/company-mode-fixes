@@ -131,16 +131,58 @@ choose a candidate.  This is especially useful when
           (concat "\\(?:[ \t=]\\|^\\)\\(" begin "[^ \t\n]*\\)"))))
 
 (defun company-files--get-prefix ()
-  (or (company-files--grab-existing-name)
-      (and company-files-use-flat-filename-completion
-           (company-files--grab-flat-name))))
+  (and
+   (company-files--should-complete-p)
+   (or (company-files--grab-existing-name)
+       (and company-files-use-flat-filename-completion
+            (company-files--grab-flat-name)))))
+
+(defcustom company-files-complete-always nil
+  "Non-nil means filename completion is always triggered."
+  :type '(boolean)
+  :group 'company-files)
+
+(defcustom company-files-trigger-major-modes '(eshell-mode shell-mode term-mode)
+  "A list of major-modes in which filename completion is provided.
+
+Add major-mode in which you want to get filename completion. Note that
+when current cursor position is in a string literal or comment,
+filename completion gets activated regardless of this value.
+
+Also note that `company-files-complete-always' overrides this
+value. This means that if you set `company-files-complete-always' to
+non-nil, filename completion is offered even if
+`company-files-trigger-major-modes' is empty."
+  :type '(list)
+  :group 'company-files)
+
+(defun company-files--should-complete-p ()
+  "Return non-nil if filename completion should be provided."
+  (cond
+   (company-files-complete-always
+    ;; A user prefer to get completion anytime.
+    t)
+   ((company-in-string-or-comment)
+    ;; In most cases, we need filename completion when we are in a
+    ;; string or comment.
+    t)
+   ((memq major-mode company-files-trigger-major-modes)
+    t)
+   (t
+    nil)))
+
+(defun company-files--grab-line (regexp &optional num)
+  (if (save-excursion
+        (re-search-backward regexp (line-beginning-position) t))
+      (match-string-no-properties (or num 0))
+    ""))
 
 (defun company-files--grab-existing-name ()
   ;; Grab the file name.
   ;; When surrounded with quotes, it can include spaces.
   (let (file dir)
     (and (cl-dolist (regexp company-files--regexps)
-           (when (setq file (company-grab-line regexp 1))
+           (when (setq file (company-files--grab-line regexp 1))
              (cl-return file)))
          (company-files--connected-p file)
          (setq dir (file-name-directory file))
