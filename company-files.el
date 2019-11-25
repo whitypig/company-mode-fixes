@@ -83,7 +83,7 @@ choose a candidate.  This is especially useful when
   ;; Don't use directory-files. It produces directories without trailing /.
   (condition-case err
       (let ((comp (sort (file-name-all-completions prefix dir)
-                        (lambda (s1 s2) (string-lessp (downcase s1) (downcase s2))))))
+                        #'company-files--candidates-sorter)))
         (when company-files-exclusions
           (setq comp (company-files--exclusions-filtered comp)))
         (if (equal prefix "")
@@ -130,19 +130,35 @@ choose a candidate.  This is especially useful when
           (concat "'\\(" begin "[^'\n]*\\)")
           (concat "\\(?:[ \t=]\\|^\\)\\(" begin "[^ \t\n]*\\)"))))
 
+(defvar company-files--completion-data nil)
+
+(defun company-files--capf-prefix ()
+  ;; (message "DEBUG: --capf-prefix called")
+  (pcase (company-files--completion-at-point)
+    (`(,prefix ,collection ,predicate)
+     (car (setq company-files--capf-completion-data
+                (list prefix collection predicate))))
+    (_ nil)))
+
+(defun company-files--shell-mode-p ()
+  (memq major-mode company-files--shell-modes))
+
 (defun company-files--get-prefix ()
-  (and
-   (company-files--should-complete-p)
-   (or (company-files--grab-existing-name)
-       (and company-files-use-flat-filename-completion
-            (company-files--grab-flat-name)))))
+  (cond
+   ((company-files--shell-mode-p)
+    (company-files--capf-prefix))
+   ((company-files--should-complete-p)
+    (or (company-files--grab-existing-name)
+        (and company-files-use-flat-filename-completion
+             (company-files--grab-flat-name))))
+   (t nil)))
 
 (defcustom company-files-complete-always nil
   "Non-nil means filename completion is always triggered."
   :type '(boolean)
   :group 'company-files)
 
-(defcustom company-files-trigger-major-modes '(eshell-mode shell-mode term-mode)
+(defcustom company-files-trigger-major-modes '()
   "A list of major-modes in which filename completion is provided.
 
 Add major-mode in which you want to get filename completion. Note that
@@ -156,20 +172,19 @@ non-nil, filename completion is offered even if
   :type '(list)
   :group 'company-files)
 
+(defconst company-files--shell-modes '(eshell-mode shell-mode term-mode)
+  "")
+
 (defun company-files--should-complete-p ()
   "Return non-nil if filename completion should be provided."
-  (cond
-   (company-files-complete-always
-    ;; A user prefer to get completion anytime.
-    t)
-   ((company-in-string-or-comment)
-    ;; In most cases, we need filename completion when we are in a
-    ;; string or comment.
-    t)
-   ((memq major-mode company-files-trigger-major-modes)
-    t)
-   (t
-    nil)))
+  (or
+   ;; A user prefer to always get completion.
+   company-files-complete-always
+   ;; In most cases, we need filename completion when we are in a
+   ;; string or comment.
+   (company-in-string-or-comment)
+   ;; Other special cases
+   (memq major-mode company-files-trigger-major-modes)))
 
 (defun company-files--grab-line (regexp &optional num)
   (if (save-excursion
@@ -180,15 +195,16 @@ non-nil, filename completion is offered even if
 (defun company-files--grab-existing-name ()
   ;; Grab the file name.
   ;; When surrounded with quotes, it can include spaces.
-  (let (file dir)
-    (and (cl-dolist (regexp company-files--regexps)
-           (when (setq file (company-files--grab-line regexp 1))
-             (cl-return file)))
-         (company-files--connected-p file)
-         (setq dir (file-name-directory file))
-         (not (string-match "//" dir))
-         (file-exists-p dir)
-         file)))
+  ;; TODO: Looks buggy, so needs to be fixed or rewritten.
+  (cl-loop for regexp in company-files--regexps
+           for file = (company-files--grab-line regexp 1)
+           for dir = (and file
+                          (company-files--connected-p file)
+                          (file-name-directory file))
+           when (and dir
+                     (not (string-match "//" dir))
+                     (file-exists-p dir))
+           return file))
 
 (defun company-files--grab-flat-name ()
   ""
@@ -205,7 +221,11 @@ non-nil, filename completion is offered even if
                   (1+ (point))))
                (line-beginning-position)))
          (prefix (buffer-substring-no-properties beg end)))
-    (when (not (string-match-p company-files--invalid-filename-characters-regexp prefix))
+    (when (and
+           (stringp prefix)
+           (> (length prefix) 0)
+           (not (string-match-p company-files--invalid-filename-characters-regexp
+                                prefix)))
       prefix)))
 
 (defun company-files--connected-p (file)
@@ -223,12 +243,68 @@ non-nil, filename completion is offered even if
 (cl-defun company-files--collect-candidates (prefix &key (recursive t))
   ;; (message "DEBUG: company-files--collect-candidates, prefix=%s" prefix)
   (cond
-   ((not (string-match-p company-files--invalid-filename-characters-regexp prefix))
+   ((not (string-match-p company-files--invalid-filename-characters-regexp
+                         prefix))
+    ;; PREFIX can be considered as a simple filename, so return files in
+    ;; current directory.
     (company-files--directory-files "." prefix))
    (t
     (company-files--complete prefix :recursive recursive))))
 
+(defun company-files--completion-at-point ()
+  "Copied from and modified `completion-at-point' in
+  \"minibuffer.el\"."
+  (let ((res (save-excursion
+               (run-hook-wrapped 'completion-at-point-functions
+                                 #'completion--capf-wrapper 'all))))
+    (pcase res
+      ;; We ignore this case.
+      (`(,_ . ,(and (pred functionp) f)) nil)
+      ;; This case is what we want. Return (prefix collection).
+      (`(,hookfun . (,start ,end ,collection . ,plist))
+       ;; (prefix collection predicate)
+       (list (buffer-substring-no-properties start end)
+             collection (plist-get plist :predicat)))
+      ;; Fallback case
+      (_ nil))))
+
+(defun company-files--candidates-sorter (s1 s2)
+  (string< (downcase s1) (downcase s2)))
+
+(defun company-files--capf-candidates (prefix)
+  ;; (message "DEBUG: --capf-candidates called, prefix=%s" prefix)
+  (pcase company-files--capf-completion-data
+    (`(,(and pre (guard (string= pre prefix))) ,collection ,predicate)
+     ;; (cl-loop for elt in (sort (all-completions pre collection predicate)
+     ;;                           (lambda (x y) (string< (downcase x) (downcase y))))
+     ;;          do (message "DEBUG: prefix=|%s|, elt=|%s|" prefix elt))
+     (cl-loop with len = (length prefix)
+              for elt in (sort (all-completions pre collection predicate)
+                               #'company-files--candidates-sorter)
+              when (not (string-match-p "\\`[.]\\{1,2\\}/\\'" elt))
+              ;; Ignore "./" and "../"
+              collect
+              (pcase elt
+                ((guard (string-suffix-p "/" prefix)) (concat prefix elt))
+                ((and (let pos (cl-position ?/ prefix :from-end t))
+                      (guard pos))
+                 ;; prefix="/some/dire/fi", elt="file"
+                 ;; then candidate = "le"
+                 (concat prefix (substring elt (- len pos 1))))
+                ;; TODO: What should we return from default case?
+                (_ (concat prefix elt)))))
+    (_ nil)))
+
 (cl-defun company-files--complete (prefix &key (recursive t))
+  ;; (message "DEBUG: --complete called, prefix=%s" prefix)
+  (cond
+   ((memq major-mode company-files--shell-modes)
+    ;; collect candidates using company-capf.el
+    (company-files--capf-candidates prefix))
+   (t
+    (company-files--complete-1 prefix :recursive recursive))))
+
+(cl-defun company-files--complete-1 (prefix &key (recursive t))
   (let* ((dir (file-name-directory prefix))
          (file (file-name-nondirectory prefix))
          (key (list file
