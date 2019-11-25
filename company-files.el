@@ -251,19 +251,24 @@ non-nil, filename completion is offered even if
    (t
     (company-files--complete prefix :recursive recursive))))
 
+(require 'comint)
+
 (defun company-files--completion-at-point ()
   "Copied from and modified `completion-at-point' in
   \"minibuffer.el\"."
-  (let ((res (save-excursion
+  (let* ((completion-at-point-functions (list 'comint-filename-completion t))
+         (res (save-excursion
                (run-hook-wrapped 'completion-at-point-functions
-                                 #'completion--capf-wrapper 'all))))
+                                 #'completion--capf-wrapper 'optimist))))
     (pcase res
       ;; We ignore this case.
       (`(,_ . ,(and (pred functionp) f)) nil)
       ;; This case is what we want. Return (prefix collection).
       (`(,hookfun . (,start ,end ,collection . ,plist))
        ;; (prefix collection predicate)
-       (list (buffer-substring-no-properties start end)
+       (list (pcase (buffer-substring-no-properties start end)
+               ((pred (string-match "\\`[']\\(.*\\)\\'")) (match-string 1))
+               (pre pre))
              collection (plist-get plist :predicat)))
       ;; Fallback case
       (_ nil))))
