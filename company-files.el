@@ -336,6 +336,8 @@ File paths with spaces are only supported inside strings."
     (sorted t)
     (annotation (company-files--annotation arg))
     (no-cache t)
+    ;; Set require-match to 'never so that users can input a
+    ;; non-existent path.
     (require-match 'never)))
 
 (provide 'company-files)
