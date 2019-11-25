@@ -56,7 +56,8 @@ obtained in a similar way as when you do
   :group 'company-files)
 
 (defcustom company-files-use-flat-filename-completion t
-  "When non-nil, completion is done for a prefix that do _not_ contain any slash.
+  "When non-nil, completion is done for a prefix that do _not_ contain
+any slash.
 
 Consider the following directory tree:
 
@@ -130,15 +131,29 @@ choose a candidate.  This is especially useful when
           (concat "'\\(" begin "[^'\n]*\\)")
           (concat "\\(?:[ \t=]\\|^\\)\\(" begin "[^ \t\n]*\\)"))))
 
-(defvar company-files--completion-data nil)
+;; (defvar company-files--completion-data nil)
 
-(defun company-files--capf-prefix ()
-  ;; (message "DEBUG: --capf-prefix called")
-  (pcase (company-files--completion-at-point)
-    (`(,prefix ,collection ,predicate)
-     (car (setq company-files--capf-completion-data
-                (list prefix collection predicate))))
-    (_ nil)))
+;; (defun company-files--capf-prefix ()
+;;   ;; (message "DEBUG: --capf-prefix called")
+;;   (pcase (company-files--completion-at-point)
+;;     (`(,prefix ,collection ,predicate)
+;;      (car (setq company-files--capf-completion-data
+;;                 (list prefix collection predicate))))
+;;     (_ nil)))
+
+(defun company-files--shell-prefix ()
+  ;; (message "DEBUG: --shell-prefix called")
+  (let ((prefix (pcase (comint--match-partial-filename)
+                  ((and (pred stringp)
+                        ;; Trim leading "'"
+                        (pred (string-match "\\`[']\\(.*\\)\\'"))
+                        (app (match-string 1) pre))
+                   pre)
+                  (pre pre))))
+    (if (and prefix (string-match-p "/" prefix))
+        prefix
+      (and company-files-use-flat-filename-completion
+           prefix))))
 
 (defun company-files--shell-mode-p ()
   (memq major-mode company-files--shell-modes))
@@ -146,7 +161,7 @@ choose a candidate.  This is especially useful when
 (defun company-files--get-prefix ()
   (cond
    ((company-files--shell-mode-p)
-    (company-files--capf-prefix))
+    (company-files--shell-prefix))
    ((company-files--should-complete-p)
     (or (company-files--grab-existing-name)
         (and company-files-use-flat-filename-completion
@@ -173,7 +188,10 @@ non-nil, filename completion is offered even if
   :group 'company-files)
 
 (defconst company-files--shell-modes '(eshell-mode shell-mode term-mode)
+
   "")
+
+(defvar company-files--completion-cache nil)
 
 (defun company-files--should-complete-p ()
   "Return non-nil if filename completion should be provided."
@@ -238,8 +256,6 @@ non-nil, filename completion is offered even if
   (let ((len (length file)))
     (and (> len 0) (eq (aref file (1- len)) ?/))))
 
-(defvar company-files--completion-cache nil)
-
 (cl-defun company-files--collect-candidates (prefix &key (recursive t))
   ;; (message "DEBUG: company-files--collect-candidates, prefix=%s" prefix)
   (cond
@@ -253,63 +269,71 @@ non-nil, filename completion is offered even if
 
 (require 'comint)
 
-(defun company-files--completion-at-point ()
-  "Copied from and modified `completion-at-point' in
-  \"minibuffer.el\"."
-  (let* ((completion-at-point-functions (list 'comint-filename-completion t))
-         (res (save-excursion
-               (run-hook-wrapped 'completion-at-point-functions
-                                 #'completion--capf-wrapper 'optimist))))
-    (pcase res
-      ;; We ignore this case.
-      (`(,_ . ,(and (pred functionp) f)) nil)
-      ;; This case is what we want. Return (prefix collection).
-      (`(,hookfun . (,start ,end ,collection . ,plist))
-       ;; (prefix collection predicate)
-       (list (pcase (buffer-substring-no-properties start end)
-               ((pred (string-match "\\`[']\\(.*\\)\\'")) (match-string 1))
-               (pre pre))
-             collection (plist-get plist :predicat)))
-      ;; Fallback case
-      (_ nil))))
+;; (defun company-files--completion-at-point ()
+;;   "Copied from and modified `completion-at-point' in
+;;   \"minibuffer.el\"."
+;;   (let* ((completion-at-point-functions (list 'comint-filename-completion t))
+;;          (res (save-excursion
+;;                (run-hook-wrapped 'completion-at-point-functions
+;;                                  #'completion--capf-wrapper 'optimist))))
+;;     (pcase res
+;;       ;; We ignore this case.
+;;       (`(,_ . ,(and (pred functionp) f)) nil)
+;;       ;; This case is what we want. Return (prefix collection).
+;;       (`(,hookfun . (,start ,end ,collection . ,plist))
+;;        ;; (prefix collection predicate)
+;;        (list (buffer-substring start end) collection plist)
+;;        ;; (list (pcase (buffer-substring-no-properties start end)
+;;        ;;         ((and
+;;        ;;           (pred (string-match "\\`[']\\(.*\\)\\'"))
+;;        ;;           (app (match-string 1) pre)
+;;        ;;           pre))
+;;        ;;         (pre pre))
+;;        ;;       collection (plist-get plist :predicat))
+;;        )
+;;       ;; Fallback case
+;;       (_ nil))))
 
 (defun company-files--candidates-sorter (s1 s2)
   (string< (downcase s1) (downcase s2)))
 
-(defun company-files--capf-candidates (prefix)
-  ;; (message "DEBUG: --capf-candidates called, prefix=%s" prefix)
-  (pcase company-files--capf-completion-data
-    (`(,(and pre (guard (string= pre prefix))) ,collection ,predicate)
-     ;; (cl-loop for elt in (sort (all-completions pre collection predicate)
-     ;;                           (lambda (x y) (string< (downcase x) (downcase y))))
-     ;;          do (message "DEBUG: prefix=|%s|, elt=|%s|" prefix elt))
-     (cl-loop with len = (length prefix)
-              for elt in (sort (all-completions pre collection predicate)
-                               #'company-files--candidates-sorter)
-              when (not (string-match-p "\\`[.]\\{1,2\\}/\\'" elt))
-              ;; Ignore "./" and "../"
-              collect
-              (pcase elt
-                ((guard (string-suffix-p "/" prefix)) (concat prefix elt))
-                ((and (let pos (cl-position ?/ prefix :from-end t))
-                      (guard pos))
-                 ;; prefix="/some/dire/fi", elt="file"
-                 ;; then candidate = "le"
-                 (concat prefix (substring elt (- len pos 1))))
-                ;; TODO: What should we return from default case?
-                (_ (concat prefix elt)))))
-    (_ nil)))
+;; (defun company-files--capf-candidates (prefix)
+;;   ;; (message "DEBUG: --capf-candidates called, prefix=%s" prefix)
+;;   (pcase company-files--capf-completion-data
+;;     (`(,(and pre (guard (string= pre prefix))) ,collection ,predicate)
+;;      ;; (cl-loop for elt in (sort (all-completions pre collection predicate)
+;;      ;;                           (lambda (x y) (string< (downcase x) (downcase y))))
+;;      ;;          do (message "DEBUG: prefix=|%s|, elt=|%s|" prefix elt))
+;;      (cl-loop with len = (length prefix)
+;;               for elt in (sort (all-completions pre collection predicate)
+;;                                #'company-files--candidates-sorter)
+;;               when (not (string-match-p "\\`[.]\\{1,2\\}/\\'" elt))
+;;               ;; Ignore "./" and "../"
+;;               collect
+;;               (pcase elt
+;;                 ((guard (string-suffix-p "/" prefix)) (concat prefix elt))
+;;                 ((and (let pos (cl-position ?/ prefix :from-end t))
+;;                       (guard pos))
+;;                  ;; prefix="/some/dire/fi", elt="file"
+;;                  ;; then candidate = "le"
+;;                  (concat prefix (substring elt (- len pos 1))))
+;;                 ;; TODO: What should we return from default case?
+;;                 (_ (concat prefix elt)))))
+;;     (_ nil)))
+
+;; (defun company-files--complete-shell-candidates (prefix)
+;;   (message "DEBUG: --capf-candidates called, prefix=%s" prefix)
+;;   nil)
+
+;; (cl-defun company-files--complete (prefix &key (recursive t))
+;;   ;; (message "DEBUG: --complete called, prefix=%s" prefix)
+;;   (cond
+;;    ((memq major-mode company-files--shell-modes)
+;;     (company-files--complete-shell-candidates prefix))
+;;    (t
+;;     (company-files--complete-1 prefix :recursive recursive))))
 
 (cl-defun company-files--complete (prefix &key (recursive t))
-  ;; (message "DEBUG: --complete called, prefix=%s" prefix)
-  (cond
-   ((memq major-mode company-files--shell-modes)
-    ;; collect candidates using company-capf.el
-    (company-files--capf-candidates prefix))
-   (t
-    (company-files--complete-1 prefix :recursive recursive))))
-
-(cl-defun company-files--complete-1 (prefix &key (recursive t))
   (let* ((dir (file-name-directory prefix))
          (file (file-name-nondirectory prefix))
          (key (list file
@@ -382,7 +406,8 @@ File paths with spaces are only supported inside strings."
     (post-completion (company-files--post-completion arg))
     (sorted t)
     (annotation (company-files--annotation arg))
-    (no-cache t)))
+    (no-cache t)
+    (require-match 'never)))
 
 (provide 'company-files)
 ;;; company-files.el ends here
