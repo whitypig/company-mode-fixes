@@ -88,6 +88,20 @@ choose a candidate.  This is especially useful when
   :type '(boolean)
   :group 'company-files)
 
+(defcustom company-files-complete-in-comment t
+  "If Non-nil, filename completion is triggered in comment.
+
+In most cases, filename completion is useful in a string, but in
+comment, it could not be that useful.  In that case, set this variable
+to `nil'."
+  :type '(boolean)
+  :group 'company-files)
+
+(defcustom company-files-complete-in-string t
+  "If Non-nil, filename completion is triggered in a string literarl."
+  :type '(boolean)
+  :group 'company-files)
+
 (defcustom company-files-trigger-major-modes '()
   "A list of major-modes in which filename completion is provided.
 
@@ -158,7 +172,7 @@ non-nil, filename completion is offered even if
                                   file-exclusions))
              collect c)))
 
-(defun company-files--shell-prefix ()
+(defun company-files--get-prefix-in-shell ()
   ;; (message "DEBUG: --shell-prefix called")
   (let ((prefix (pcase (comint--match-partial-filename)
                   ((and (pred stringp)
@@ -178,12 +192,23 @@ non-nil, filename completion is offered even if
 (defun company-files--get-prefix ()
   (cond
    ((company-files--shell-mode-p)
-    (company-files--shell-prefix))
+    ;; In shell-related modes, always try to perform completion.
+    (company-files--get-prefix-in-shell))
    ((company-files--should-complete-p)
     (or (company-files--grab-existing-name)
         (and company-files-use-flat-filename-completion
              (company-files--grab-flat-name))))
    (t nil)))
+
+(defun company-files--should-complete-in-string-or-comment ()
+  "Return non-nil if filename completion should be provided in a
+string or comment."
+  (pcase (parse-partial-sexp (point-min) (point))
+    (`(,zero ,one ,two ,in-string ,in-comment . ,others)
+     (or
+      (and in-string company-files-complete-in-string)
+      (and in-comment company-files-complete-in-comment)))
+    (_ nil)))
 
 (defun company-files--should-complete-p ()
   "Return non-nil if filename completion should be provided."
@@ -192,7 +217,7 @@ non-nil, filename completion is offered even if
    company-files-complete-always
    ;; In most cases, we need filename completion when we are in a
    ;; string or comment.
-   (company-in-string-or-comment)
+   (company-files--should-complete-in-string-or-comment)
    ;; Other special cases
    (memq major-mode company-files-trigger-major-modes)))
 
